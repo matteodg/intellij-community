@@ -93,6 +93,59 @@ class RefactoringToolset : McpToolset {
     }
     return "Successfully renamed '$symbolName' to '$newName' in $pathInProject with ${usages.size} usages."
   }
+
+  @McpTool
+  @McpDescription("""
+        Deletes a symbol (variable, function/method, class, etc.) from the specified file.
+
+        This tool removes the declaration of the symbol from the file. It does not automatically modify or delete external usages;
+        if usages remain elsewhere, they may become unresolved and should be addressed separately.
+
+        Requires two parameters:
+            - pathInProject: The relative path to the file from the project's root directory (e.g., `src/api/controllers/userController.js`)
+            - symbolName: The exact, case-sensitive name of the symbol to delete (e.g., `getUserData`).
+
+        Returns a success message if the delete operation was successful.
+        Returns an error message if the file or symbol cannot be found or the delete operation failed.
+    """)
+  suspend fun delete_symbol(
+    @McpDescription(Constants.RELATIVE_PATH_IN_PROJECT_DESCRIPTION)
+    pathInProject: String,
+    @McpDescription("Name of the symbol to delete")
+    symbolName: String,
+  ): String {
+    val project = currentCoroutineContext().project
+    val resolvedPath = project.resolveInProject(pathInProject)
+
+    val virtualFile = LocalFileSystem.getInstance().findFileByNioFile(resolvedPath)
+                      ?: LocalFileSystem.getInstance().refreshAndFindFileByNioFile(resolvedPath)
+                      ?: mcpFail("File not found: $pathInProject")
+
+    val document = readAction {
+      FileDocumentManager.getInstance().getDocument(virtualFile)
+    } ?: mcpFail("Cannot read file: $pathInProject")
+
+    val psiDocumentManager = PsiDocumentManager.getInstance(project)
+    val psiFile = readAction {
+      psiDocumentManager.getPsiFile(document)
+    } ?: mcpFail("couldn't get PSI file for: $pathInProject")
+
+    val targetElement = readAction {
+      findSymbolInFile(psiFile, symbolName)
+    } ?: mcpFail("Couldn't find symbol '$symbolName' in file '$pathInProject'")
+
+    withContext(Dispatchers.EDT) {
+      writeIntentReadAction {
+        try {
+          targetElement.delete()
+        } catch (t: Throwable) {
+          mcpFail("Failed to delete symbol '$symbolName' in '$pathInProject': ${t.message ?: "unknown error"}")
+        }
+      }
+    }
+
+    return "Successfully deleted symbol '$symbolName' from $pathInProject."
+  }
 }
 
 /**

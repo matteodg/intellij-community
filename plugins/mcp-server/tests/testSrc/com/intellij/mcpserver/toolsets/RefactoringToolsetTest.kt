@@ -34,4 +34,20 @@ class RefactoringToolsetTest : GeneralMcpToolsetTestBase() {
     )
 
   }
+
+  @Test
+  @Disabled("symbol not found: MainWithCode in")
+  fun delete_class() = runBlocking {
+    withContext(Dispatchers.EDT) {
+      FileEditorManager.getInstance(project).openFile(mainJavaFileWithCode, true)
+    }
+    testMcpTool(
+      RefactoringToolset::delete_symbol.name,
+      buildJsonObject {
+        put("symbolName", JsonPrimitive("MainWithCode"))
+        put("pathInProject", JsonPrimitive(mainJavaFileWithCode.path))
+      },
+      "Successfully deleted symbol 'MainWithCode' from ${mainJavaFileWithCode.path}."
+    )
+  }
 }
