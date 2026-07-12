@@ -138,6 +138,7 @@ jvm_library(
         "//platform/execution",
         "//platform/projectModel-impl",
         "//platform/testRunner",
+        "//platform/smRunner",
         "//libraries/kotlinx/collections-immutable:libraries-kotlinx-collections-immutable",
         ":platform_java-guiForms-rt_provided",
         ":plugins_maven_artifactResolver-m31_provided",

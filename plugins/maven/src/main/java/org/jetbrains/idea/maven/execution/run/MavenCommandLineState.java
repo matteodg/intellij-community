@@ -65,6 +65,9 @@ import org.jetbrains.idea.maven.execution.MavenRebuildAction;
 import org.jetbrains.idea.maven.execution.MavenResumeAction;
 import org.jetbrains.idea.maven.execution.MavenRunConfiguration;
 import org.jetbrains.idea.maven.execution.MavenRunConfigurationType;
+import org.jetbrains.idea.maven.execution.test.MavenTestResultsSupport;
+import org.jetbrains.idea.maven.execution.test.MavenTestRunConfigurationUtil;
+import org.jetbrains.idea.maven.execution.test.MavenTestsExecutionConsole;
 import org.jetbrains.idea.maven.execution.RunnerBundle;
 import org.jetbrains.idea.maven.execution.target.MavenCommandLineSetup;
 import org.jetbrains.idea.maven.execution.target.MavenRuntimeTargetConfiguration;
@@ -209,6 +212,10 @@ public class MavenCommandLineState extends JavaCommandLineState implements Remot
                                       DefaultBuildDescriptor descriptor,
                                       ProcessHandler processHandler,
                                       @NotNull Function<String, String> targetFileMapper) throws ExecutionException {
+    if (MavenTestRunConfigurationUtil.isTestRun(myConfiguration)) {
+      return doRunTestExecute(runner, taskId, descriptor, processHandler);
+    }
+
     final BuildView buildView = createBuildView(executor, descriptor, processHandler);
 
     if (buildView == null) {
@@ -232,6 +239,42 @@ public class MavenCommandLineState extends JavaCommandLineState implements Remot
     restartActions.add(new JvmToggleAutoTestAction());
 
     if (MavenResumeAction.isApplicable(getEnvironment().getProject(), getJavaParameters(), myConfiguration)) {
+      MavenResumeAction resumeAction =
+        new MavenResumeAction(res.getProcessHandler(), runner, getEnvironment(), eventProcessor.getParsingContext());
+      restartActions.add(resumeAction);
+    }
+    res.setRestartActions(restartActions.toArray(AnAction.EMPTY_ARRAY));
+    return res;
+  }
+
+  private ExecutionResult doRunTestExecute(@NotNull ProgramRunner runner,
+                                           ExternalSystemTaskId taskId,
+                                           DefaultBuildDescriptor descriptor,
+                                           ProcessHandler processHandler) {
+    MavenTestsExecutionConsole consoleView = MavenTestResultsSupport.createConsole(getEnvironment(), myConfiguration);
+    MavenTestResultsSupport.configureBuildDescriptor(descriptor);
+    BuildViewManager viewManager = getEnvironment().getProject().getService(BuildViewManager.class);
+    descriptor.withProcessHandler(new MavenBuildHandlerFilterSpyWrapper(processHandler, false), null);
+    descriptor.withExecutionEnvironment(getEnvironment());
+    MavenBuildEventProcessor eventProcessor =
+      new MavenBuildEventProcessor(myConfiguration, viewManager, descriptor, taskId, path -> path,
+                                    MavenTestResultsSupport.createStartBuildEventSupplier(descriptor, consoleView));
+
+    processHandler.addProcessListener(new BuildToolConsoleProcessAdapter(eventProcessor));
+    processHandler.addProcessListener(
+      MavenTestResultsSupport.createResultsListener(consoleView, myConfiguration, eventProcessor::getParsingContext, descriptor.getStartTime()));
+    if (emulateTerminal()) {
+      consoleView.attachToProcess(processHandler);
+    }
+    else {
+      consoleView.attachToProcess(new MavenHandlerFilterSpyWrapper(processHandler, false));
+    }
+
+    DefaultExecutionResult res = new DefaultExecutionResult(consoleView, processHandler);
+    List<AnAction> restartActions = new ArrayList<>();
+    restartActions.add(new JvmToggleAutoTestAction());
+
+    if (MavenResumeAction.isApplicable(myConfiguration)) {
       MavenResumeAction resumeAction =
         new MavenResumeAction(res.getProcessHandler(), runner, getEnvironment(), eventProcessor.getParsingContext());
       restartActions.add(resumeAction);

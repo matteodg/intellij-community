@@ -68,6 +68,8 @@ import org.jetbrains.idea.maven.execution.MavenRunConfiguration
 import org.jetbrains.idea.maven.execution.MavenRunConfigurationType
 import org.jetbrains.idea.maven.execution.MavenRunner
 import org.jetbrains.idea.maven.execution.RunnerBundle
+import org.jetbrains.idea.maven.execution.test.MavenTestResultsSupport
+import org.jetbrains.idea.maven.execution.test.MavenTestRunConfigurationUtil
 import org.jetbrains.idea.maven.externalSystemIntegration.output.MavenParsingContext
 import org.jetbrains.idea.maven.project.BundledMaven
 import org.jetbrains.idea.maven.project.BundledMaven3
@@ -332,6 +334,10 @@ class MavenShCommandLineState(val environment: ExecutionEnvironment, private val
     processHandler: ProcessHandler,
     runner: ProgramRunner<*>,
   ): ExecutionResult {
+    if (MavenTestRunConfigurationUtil.isTestRun(myConfiguration)) {
+      return doRunTestExecute(taskId, descriptor, processHandler, runner)
+    }
+
     val buildView: BuildView? = createBuildView(descriptor)
 
     if (buildView == null) {
@@ -351,6 +357,45 @@ class MavenShCommandLineState(val environment: ExecutionEnvironment, private val
     val actions = arrayOf<AnAction>(createFilteringActionsGroup(WeakFilterableSupplier(buildView)))
 
     val res = DefaultExecutionResult(buildView, processHandler, *actions)
+    val restartActions = ArrayList<AnAction>()
+    restartActions.add(JvmToggleAutoTestAction())
+
+    if (MavenResumeAction.isApplicable(myConfiguration)) {
+      val resumeAction =
+        MavenResumeAction(res.getProcessHandler(), runner, environment, eventProcessor.parsingContext)
+      restartActions.add(resumeAction)
+    }
+    res.setRestartActions(*restartActions.toTypedArray())
+    return res
+  }
+
+  @Throws(ExecutionException::class)
+  private fun doRunTestExecute(
+    taskId: ExternalSystemTaskId,
+    descriptor: DefaultBuildDescriptor,
+    processHandler: ProcessHandler,
+    runner: ProgramRunner<*>,
+  ): ExecutionResult {
+    val consoleView = MavenTestResultsSupport.createConsole(environment, myConfiguration)
+    MavenTestResultsSupport.configureBuildDescriptor(descriptor)
+    val viewManager = environment.project.getService(BuildViewManager::class.java)
+    descriptor.withProcessHandler(MavenBuildHandlerFilterSpyWrapper(processHandler, isWindows()), null)
+    descriptor.withExecutionEnvironment(environment)
+    val eventProcessor =
+      MavenBuildEventProcessor(myConfiguration,
+                               viewManager,
+                               descriptor,
+                               taskId,
+                               { it },
+                               MavenTestResultsSupport.createStartBuildEventSupplier(descriptor, consoleView))
+
+    processHandler.addProcessListener(BuildToolConsoleProcessAdapter(eventProcessor))
+    processHandler.addProcessListener(
+      MavenTestResultsSupport.createResultsListener(consoleView, myConfiguration, { eventProcessor.parsingContext }, descriptor.startTime),
+    )
+    consoleView.attachToProcess(MavenHandlerFilterSpyWrapper(processHandler, isWrapperedOutput()))
+
+    val res = DefaultExecutionResult(consoleView, processHandler)
     val restartActions = ArrayList<AnAction>()
     restartActions.add(JvmToggleAutoTestAction())
 
