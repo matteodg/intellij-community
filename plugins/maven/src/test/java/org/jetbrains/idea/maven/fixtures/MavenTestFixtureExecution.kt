@@ -51,6 +51,7 @@ class MyTestExecutionListener(
   val system: StringBuilder = StringBuilder(),
   val semaphore: Semaphore,
   val descriptor: RunContentDescriptor,
+  val onTerminated: ((RunContentDescriptor) -> Unit)? = null,
 ) : ProcessListener {
 
   override fun onTextAvailable(event: ProcessEvent, outputType: Key<*>) {
@@ -68,9 +69,10 @@ class MyTestExecutionListener(
   }
 
   override fun processTerminated(event: ProcessEvent) {
-    semaphore.up()
     runInEdtAndWait {
+      onTerminated?.invoke(descriptor)
       Disposer.dispose(descriptor)
+      semaphore.up()
     }
   }
 }
@@ -83,6 +85,7 @@ fun MavenImportingTestFixture.execute(
   params: MavenRunnerParameters,
   settings: MavenRunnerSettings = MavenRunnerSettings(),
   generalSettings: MavenGeneralSettings = mavenGeneralSettings,
+  onTerminated: ((RunContentDescriptor) -> Unit)? = null,
   maxTimeToWait: Duration = 1.minutes,
 ): ExecutionInfo {
   val sema = Semaphore()
@@ -96,7 +99,7 @@ fun MavenImportingTestFixture.execute(
       project, params, generalSettings,
       settings,
       ProgramRunner.Callback { descriptor ->
-        descriptor.processHandler!!.addProcessListener(MyTestExecutionListener(stdout, stderr, system, sema, descriptor))
+        descriptor.processHandler!!.addProcessListener(MyTestExecutionListener(stdout, stderr, system, sema, descriptor, onTerminated))
         charset = (descriptor.processHandler as? BaseProcessHandler<*>)?.charset
       }, false)
   }

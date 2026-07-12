@@ -21,6 +21,7 @@ import com.intellij.openapi.util.io.toCanonicalPath
 import com.intellij.platform.eel.EelOsFamily
 import com.intellij.platform.eel.provider.getEelDescriptor
 import com.intellij.testFramework.EdtTestUtil
+import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.ExtensionTestUtil.addExtensions
 import com.intellij.testFramework.junit5.TestApplication
 import com.intellij.util.ThrowableRunnable
@@ -29,6 +30,7 @@ import kotlinx.coroutines.runBlocking
 import org.jetbrains.idea.maven.execution.run.MAVEN_EXECUTION_CONFIGURATOR
 import org.jetbrains.idea.maven.execution.run.MavenExecutionConfigurator
 import org.jetbrains.idea.maven.execution.run.MavenExecutionConfiguratorProvider
+import org.jetbrains.idea.maven.execution.test.MavenTestsExecutionConsole
 import org.jetbrains.idea.maven.fixtures.ExecutionInfo
 import org.jetbrains.idea.maven.fixtures.checkUpdatingExcludedFoldersAfterExecution
 import org.jetbrains.idea.maven.fixtures.debugMavenRunConfiguration
@@ -101,6 +103,47 @@ class ScriptMavenExecutionTest(mavenVersion: String, modelVersion: String) {
     assertTrue(executionInfo.stdout.contains(wrapperOutput), "Should run wrapper")
   }
 
+  @Test
+  fun testShouldShowMavenTestResultsForMavenTestGoal() = runBlocking {
+    maven.importProjectAsync("""
+         <groupId>test</groupId>
+         <artifactId>project</artifactId>
+         <version>1</version>"""
+    )
+    createFakeProjectWrapper(
+      """
+      <testsuite name="com.example.MavenReportedTest" tests="2" failures="1" errors="0" skipped="0" time="0.150">
+        <testcase classname="com.example.MavenReportedTest" name="passes" time="0.050"/>
+        <testcase classname="com.example.MavenReportedTest" name="fails" time="0.100">
+          <failure message="broken">stacktrace</failure>
+        </testcase>
+      </testsuite>
+      """.trimIndent(),
+    )
+    maven.mavenGeneralSettings.mavenHomeType = MavenWrapper
+
+    var suiteName: String? = null
+    var testNames: List<String>? = null
+    var testStates: List<Pair<Boolean, Boolean>>? = null
+    val executionInfo = maven.execute(
+      MavenRunnerParameters(true, maven.projectPath.toCanonicalPath(), null as String?, mutableListOf("test"), emptyList()),
+      onTerminated = { descriptor ->
+        PlatformTestUtil.dispatchAllInvocationEventsInIdeEventQueue()
+        val testConsole = descriptor.executionConsole as? MavenTestsExecutionConsole ?: return@execute
+        val root = testConsole.resultsViewer.testsRootNode
+        val suite = root.children.single()
+        suiteName = suite.name
+        testNames = suite.children.map { it.name }
+        testStates = suite.children.map { it.isPassed to it.isDefect }
+      },
+    )
+
+    assertTrue(executionInfo.stdout.contains(wrapperOutput), "Should run wrapper")
+    assertEquals("MavenReportedTest", suiteName)
+    assertEquals(listOf("passes", "fails"), testNames)
+    assertEquals(listOf(true to false, false to true), testStates)
+  }
+
 
   @Test
   fun testShouldExecuteBundledMavenForAdditionalLinkedProjectIfThereIsNoWrapper() = runBlocking {
@@ -128,15 +171,61 @@ class ScriptMavenExecutionTest(mavenVersion: String, modelVersion: String) {
     }
   }
 
-  private fun createFakeProjectWrapper() {
+  private fun createFakeProjectWrapper(reportXml: String? = null) {
     maven.createProjectSubFile(".mvn/wrapper/maven-wrapper.properties",
                          "distributionUrl=http://example.com")
     if (EelOsFamily.Windows == maven.project.getEelDescriptor().osFamily) {
-      maven.createProjectSubFile("mvnw.cmd", "@echo $wrapperOutput\r\n@echo %*\r\n@set")
+      maven.createProjectSubFile("mvnw.cmd", createWindowsWrapperScript(reportXml))
     }
     else {
-      maven.createProjectSubFile("mvnw", "#!/bin/sh\necho $wrapperOutput\necho $@ \nprintenv ")
+      maven.createProjectSubFile("mvnw", createUnixWrapperScript(reportXml))
     }
+  }
+
+  private fun createWindowsWrapperScript(reportXml: String?): String {
+    if (reportXml == null) {
+      return "@echo $wrapperOutput\r\n@echo %*\r\n@set"
+    }
+
+    val escapedLines = reportXml.lines().joinToString("\r\n") { "@echo ${escapeForBatch(it)}" }
+    return """
+      @mkdir target\surefire-reports 2>nul
+      @(
+      $escapedLines
+      @) > target\surefire-reports\TEST-com.example.MavenReportedTest.xml
+      @echo $wrapperOutput
+      @echo %*
+      @set
+    """.trimIndent().replace("\n", "\r\n")
+  }
+
+  private fun createUnixWrapperScript(reportXml: String?): String {
+    if (reportXml == null) {
+      return "#!/bin/sh\necho $wrapperOutput\necho \$@ \nprintenv "
+    }
+
+    return """
+      #!/bin/sh
+      mkdir -p target/surefire-reports
+      cat <<'EOF' > target/surefire-reports/TEST-com.example.MavenReportedTest.xml
+      $reportXml
+      EOF
+      echo $wrapperOutput
+      echo \$@
+      printenv
+    """.trimIndent()
+  }
+
+  private fun escapeForBatch(text: String): String {
+    return text
+      .replace("^", "^^")
+      .replace("&", "^&")
+      .replace("<", "^<")
+      .replace(">", "^>")
+      .replace("|", "^|")
+      .replace("(", "^(")
+      .replace(")", "^)")
+      .replace("%", "%%")
   }
 
   @Test
